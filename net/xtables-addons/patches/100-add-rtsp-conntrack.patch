@@ -1082,7 +1082,7 @@
 +#endif /* _IP_CONNTRACK_RTSP_H */
 --- /dev/null
 +++ b/extensions/rtsp/nf_nat_rtsp.c
-@@ -0,0 +1,640 @@
+@@ -0,0 +1,704 @@
 +/*
 + * RTSP extension for TCP NAT alteration
 + * (C) 2003 by Tom Marshall <tmarshall at real.com>
@@ -1518,6 +1518,51 @@
 +	return 1;
 +}
 +
++static int
++rtsp_mangle_xnat(
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
++		 unsigned int protoff,
++#endif
++		 struct sk_buff* skb, uint xnatoff, uint xnatlen)
++{
++	char*  ptcp;
++	uint   tcplen;
++	char*  pxnat;
++	uint   off = 0;
++
++	// conntrack
++	enum ip_conntrack_info ctinfo;
++	struct nf_conn *ct = nf_ct_get(skb, &ctinfo);
++	if (ct == NULL) {
++		return NF_ACCEPT;
++	}
++
++	get_skb_tcpdata(skb, &ptcp, &tcplen);
++	pxnat = ptcp+xnatoff;
++
++	if (xnatoff+xnatlen > tcplen || tcplen-xnatoff < xnatlen ||
++	    xnatlen < 14 || !iseol(pxnat[xnatlen-1]) ||
++	    nf_strncasecmp(pxnat, "x-NAT_Address:", 14) != 0) {
++		pr_info("sanity check failed\n");
++		return 0;
++	}
++	off += 14;
++	SKIP_WSPACE(ptcp+xnatoff, xnatlen, off);
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
++	if (!nf_nat_mangle_tcp_packet(skb, ct, ctinfo, protoff,
++				      xnatoff, xnatlen, "", 0)) {
++#else
++	if (!nf_nat_mangle_tcp_packet(skb, ct, ctinfo,
++				      xnatoff, xnatlen, "", 0)) {
++#endif
++		pr_info("modify rtsp packet failed\n");
++		return 0;
++	}
++
++	return 1;
++}
++
 +static uint
 +help_out(struct sk_buff *skb, enum ip_conntrack_info ctinfo,
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
@@ -1592,6 +1637,25 @@
 +				rtcp_exp->saved_proto.udp.port = htons(prtspexp->hiport);
 +				rtcp_exp->dir = !dir;
 +			}
++			get_skb_tcpdata(skb, &ptcp, &tcplen);
++			hdrslen -= (oldtcplen-tcplen);
++			off -= (oldtcplen-tcplen);
++			lineoff -= (oldtcplen-tcplen);
++			linelen -= (oldtcplen-tcplen);
++			pr_debug("rep: len=%u, %.*s", linelen, (int)linelen, ptcp+lineoff);
++		}
++
++		if (nf_strncasecmp(ptcp+lineoff, "x-NAT_Address:", 14) == 0) {
++			uint oldtcplen = tcplen;
++			pr_debug("hdr: x-NAT_Address\n");
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0)
++			if (!rtsp_mangle_xnat(prtspexp, skb, lineoff, linelen)) {
++#else
++			if (!rtsp_mangle_xnat(skb, lineoff, linelen)) {
++#endif
++				pr_debug("hdr: Transport mangle failed");
++			}
++
 +			get_skb_tcpdata(skb, &ptcp, &tcplen);
 +			hdrslen -= (oldtcplen-tcplen);
 +			off -= (oldtcplen-tcplen);
